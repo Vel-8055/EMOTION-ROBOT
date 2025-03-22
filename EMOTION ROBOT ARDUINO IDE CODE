@@ -1,0 +1,923 @@
+#include <Wire.h>
+#include <U8g2lib.h>
+#include <CuteBuzzerSounds.h>
+#include <Sounds.h>
+#include <ESP8266WiFi.h>
+#include <ESP8266WebServer.h>
+
+const char* ssid = "V'7i";
+const char* password = "Password";
+
+ESP8266WebServer server(80);
+
+U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE);
+
+#define I1 D3
+#define I2 D4
+#define I3 D5
+#define I4 D8
+#define IR_SENSOR D7
+#define TOUCH_PIN D6
+#define BUZZER_PIN D0
+
+volatile bool touchDetected = false;
+volatile bool irTriggered = false;
+volatile unsigned long lastTouchTime = 0;
+volatile unsigned long lastIRTime = 0;
+
+unsigned long forwardTime = 1000;   // 3 seconds forward
+unsigned long stopTime = 500;       // 1 second stop
+unsigned long backwardTime = 1000;  // 3 seconds backward
+int slowSpeed = 150;
+int rotations = 3;
+unsigned long moveTime = 500;
+int twirlTime = 500;
+// Arrays for explosion effect
+float starX[15], starY[15], starAngle[15];
+bool starActive[15];
+
+enum Emotion {
+  HAPPY = 1,
+  SAD,
+  ANGER,
+  FEAR,
+  SURPRISE,
+  SLEEPING
+};
+
+Emotion currentEmotion = SLEEPING;
+
+void ICACHE_RAM_ATTR touchISR() {
+  if (millis() - lastTouchTime > 300) {  // Debounce
+    touchDetected = true;
+    lastTouchTime = millis();
+  }
+}
+
+void ICACHE_RAM_ATTR irISR() {
+  if (millis() - lastIRTime > 300) {  // Debounce
+    irTriggered = true;
+    lastIRTime = millis();
+  }
+}
+
+void handleEmotion() {
+  if (server.hasArg("emotion")) {
+    String emotion = server.arg("emotion");
+    Serial.print("Received Emotion: ");
+    Serial.println(emotion);
+
+    if (emotion == "happy") currentEmotion = HAPPY;
+    else if (emotion == "sad") currentEmotion = SAD;
+    else if (emotion == "angry") currentEmotion = ANGER;
+    else if (emotion == "surprise") currentEmotion = SURPRISE;
+    else if (emotion == "fear") currentEmotion = FEAR;
+    else currentEmotion = SLEEPING;
+
+    server.send(200, "text/plain", "Emotion received: " + emotion);
+  } else {
+    server.send(400, "text/plain", "Missing emotion parameter");
+  }
+}
+
+void setup() {
+  u8g2.begin();
+  randomSeed(analogRead(A0));
+
+  pinMode(I1, OUTPUT);
+  pinMode(I2, OUTPUT);
+  pinMode(I3, OUTPUT);
+  pinMode(I4, OUTPUT);
+  pinMode(TOUCH_PIN, INPUT);
+  pinMode(IR_SENSOR, INPUT_PULLUP);
+
+  attachInterrupt(digitalPinToInterrupt(TOUCH_PIN), touchISR, CHANGE);
+  attachInterrupt(digitalPinToInterrupt(IR_SENSOR), irISR, RISING);
+
+  cute.init(BUZZER_PIN);
+
+  Serial.begin(115200);
+  Serial.println("Pro Companion Bot Starting...");
+
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to WiFi!");
+  Serial.print("ESP8266 IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  server.on("/", HTTP_GET, handleEmotion);
+  server.begin();
+  Serial.println("Server started");
+
+  WiFi.setSleep(false);
+}
+
+void loop() {
+  server.handleClient();
+
+  if (touchDetected) {
+    touchDetected = false;
+    Serial.println("Touch detected! Changing emotion...");
+    if (currentEmotion == HAPPY) currentEmotion = SAD;
+    else currentEmotion = HAPPY;
+  }
+
+  if (irTriggered) {
+    irTriggered = false;
+    Serial.println("IR Sensor Triggered! Moving bot...");
+    moveBackward(255);
+    delay(1000);
+    stopMotors();
+  }
+
+  switch (currentEmotion) {
+    case HAPPY:
+      cute.play(S_HAPPY);
+      drawHappy();
+      moveHappy();
+      break;
+    case SAD:
+      cute.play(S_SAD);
+      drawSad();
+      moveSad();
+      break;
+    case ANGER:
+      cute.play(S_CONFUSED);
+      drawAnger();
+      moveAnger();
+      break;
+    case FEAR:
+      cute.play(S_MODE1);
+      drawFear();
+      moveFear();
+      break;
+    case SURPRISE:
+      cute.play(S_SURPRISE);
+      drawSurprise();
+      moveSurprise();
+      break;
+    case SLEEPING:
+    default:
+      drawGoodNight();
+      cute.play(S_SLEEPING);
+      break;
+  }
+
+  stopMotors();
+}
+
+
+// void checkSensors() {
+//   unsigned long lastTouchCheck = 0;  // Store the last time the touch sensor was checked
+
+//   // Check the time elapsed since the last check
+//   if (millis() - lastTouchCheck >= touchCheckInterval) {
+//     lastTouchCheck = millis();  // Update the last check time
+
+//     // Check touch sensor
+//     if (digitalRead(TOUCH_PIN) == HIGH) {
+//       currentEmotion = HAPPY;  // Example: Touch activates happy
+//     }
+//   }
+// }
+
+// ISR for IR sensor
+// void irSensorTriggered() {
+//   irTriggered = true;  // Set the flag to indicate the IR sensor was triggered
+// }
+
+// void loop() {
+//   // put your main code here, to run repeatedly:
+//   unsigned long currentMillis = millis();
+//   int touchState = digitalRead(TOUCH_PIN);
+
+//   // Detect touch state change (only count when pressed)
+//   if (touchState == HIGH && prevTouchState == LOW && f1 == 0) {  // Touch started
+//     touchStartMillis = currentMillis;
+//     f1 = 1;
+//   }
+
+//   if (touchState == HIGH) {  // Touch is being held
+//     touchDuration = currentMillis - touchStartMillis;
+//   }
+
+//   if (touchState == LOW && prevTouchState == HIGH && f1 == 1) {  // Touch ended
+//     if (touchDuration < longPressThreshold) {
+//       Serial.println("single tap");
+//       drawHappy();
+//     } else {
+//       Serial.println("long");
+//       drawGoodNight();
+//     }
+//     f1 = 0;
+//     touchDuration = 0;  // Reset touch duration
+//   }
+
+//   // Update previous touch state
+//   prevTouchState = touchState;
+
+//   // Check if 1 second has passed for the window
+//   if (currentMillis - startMillis >= interval) {
+//     startMillis = currentMillis;  // Reset timer
+//   }
+//   // drawGoodNight();
+//   // //cute.play(S_SLEEPING);
+
+//   // drawHappy();
+//   // moveHappy();
+//   // //cute.play(S_HAPPY);
+
+//   // drawAnger();
+//   // moveAnger();
+//   // //cute.play(S_CONFUSED);
+
+//   // drawSad();
+//   // moveSad();
+//   // //cute.play(S_SAD);
+
+//   // drawSurprise();
+//   // moveSurprise();
+//   // //cute.play(S_SURPRISE);
+
+//   // drawFear();
+//   //  //moveFear();
+//   // //cute.play(S_MODE1);
+// }
+
+void drawGoodNight() {
+  for (int frameCount = 1; frameCount <= 16; frameCount++) {
+    u8g2.clearBuffer();
+
+    drawSleepElements();
+    drawZZZ(frameCount % 2);
+    u8g2.sendBuffer();
+
+    delay(200);
+  }
+}
+
+void drawZZZ(int offset) {
+
+  u8g2.setDrawColor(0);  // Set draw color to black to clear
+  u8g2.drawBox(88, 10 - offset, 30, 12);
+  u8g2.drawPixel(20, offset * 9);
+  u8g2.drawPixel(40, (offset - 1) * 9);
+  u8g2.drawPixel(100, (offset - 2) * 9);
+
+  u8g2.setDrawColor(1);  // Set draw color back to white
+
+  // Set a small font for the "ZZZ"
+  u8g2.setFont(u8g2_font_5x8_tr);
+
+  // Draw the "ZZZ" with an upward motion and slant
+  u8g2.drawStr(90, 20 - offset, "Z");   // First Z (bottom)
+  u8g2.drawStr(98, 15 - offset, "Z");   // Second Z (middle, slanted up)
+  u8g2.drawStr(106, 10 - offset, "Z");  // Third Z (top, slanted up)
+
+  //Stars
+  u8g2.drawPixel(20, offset * 9);
+  u8g2.drawPixel(40, (offset - 1) * 9);
+  u8g2.drawPixel(100, (offset - 2) * 9);
+  delay(100);
+
+  u8g2.drawPixel(20, offset * 9);
+  u8g2.drawPixel(40, (offset - 1) * 9);
+  u8g2.drawPixel(100, (offset - 2) * 9);
+}
+
+void drawSleepElements() {
+  drawEyes(73, 26);
+  u8g2.drawCircle(64, 32, 24);
+  u8g2.sendBuffer();
+  delay(300);
+
+  u8g2.setFont(u8g2_font_4x6_tr);
+  u8g2.drawStr(93, 32, "Sleeping");
+  u8g2.drawStr(100, 45, "..:)");
+
+  u8g2.drawDisc(20, 16, 5);  //Moon
+  drawMouth(65, 32, 15, 40);
+}
+
+void drawHappy() {
+  for (int frameCount = 1; frameCount <= 5; frameCount++) {
+    u8g2.clearBuffer();
+
+    if (frameCount % 2 == 1 && frameCount != 5) {
+      u8g2.setFont(u8g2_font_5x8_tr);
+      drawRectBox();
+      drawvEyes(63, 24);
+      u8g2.drawCircle(54, 32, 24);  // Face
+      drawSmile(54, 12, 8);
+      u8g2.drawStr(85, 17, "Let's");
+      u8g2.drawStr(85, 27, "Celebrate");
+    } else if (frameCount == 5) {
+      u8g2.setFont(u8g2_font_5x8_tr);
+      drawRectBox();
+      drawvEyes(63, 24);
+      u8g2.drawCircle(54, 32, 24);  // Face
+      drawSmile(54, 12, 8);
+      u8g2.drawStr(85, 17, "You have");
+      u8g2.drawStr(85, 27, "a good smile..");
+    } else {
+      u8g2.setFont(u8g2_font_6x10_tr);
+      drawRectBox();
+      drawvEyes(63, 24);
+      u8g2.drawCircle(54, 32, 29);  // Face
+      drawSmile(54, 16, 11);
+      u8g2.drawStr(85, 17, "Let's");
+      u8g2.drawStr(85, 27, "Celebrate");
+    }
+    u8g2.sendBuffer();
+    delay(500);
+  }
+}
+
+void moveHappy() {
+  // Perform twirling motion
+  for (int i = 0; i < rotations; i++) {
+    Serial.println("It's twirling");
+    twirl();
+    delay(twirlTime);  // Delay for each twirl
+  }
+
+  // Perform circular motion
+  Serial.println("Moves in circular motion");
+  moveInCircle();
+  delay(500);  // Perform circular motion for 5 seconds
+}
+
+void drawAnger() {
+  for (int frameCount = 1; frameCount <= 2; frameCount++) {
+
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(25, 20, "Let's take a");
+    u8g2.drawStr(25, 40, "Deep breath..");
+    u8g2.sendBuffer();
+    delay(300);
+
+    u8g2.clearBuffer();  // Clear entire screen buffer for static elements
+    drawAngryElements();
+    u8g2.sendBuffer();  // Send static elements to display
+    delay(200);         // Pause before the next frame
+
+    u8g2.clearBuffer();
+    drawAfterCheer();
+    u8g2.sendBuffer();
+    delay(500);
+  }
+}
+
+void drawAngryElements() {
+  drawRectBox();
+  drawvEyes(53, 24);
+  u8g2.drawCircle(44, 32, 24);  // Face
+
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(78, 17, "Stay");
+  u8g2.drawStr(78, 32, "Calm..:)");
+
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(42, 44, "o");
+
+  for (int offset = 0; offset <= 3; offset++) {
+    animateBreathe(offset);  // Animate breathing
+    delay(150);              // Small delay for animation effect
+  }
+}
+
+void drawAfterCheer() {
+  drawRectBox();
+  drawvEyes(63, 24);
+  u8g2.drawCircle(54, 32, 24);  // Face
+  drawSmile(54, 12, 8);
+
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(85, 17, "You're");
+  u8g2.drawStr(85, 27, "doing");
+  u8g2.drawStr(85, 37, "GREAT!");
+}
+
+void drawRectBox() {
+  u8g2.drawLine(1, 1, 128, 1);
+  u8g2.drawLine(1, 63, 128, 63);
+  u8g2.drawLine(2, 1, 2, 64);
+  u8g2.drawLine(127, 1, 127, 64);
+}
+
+void drawvEyes(int x, int y) {
+  for (int i = 0; i <= 1; i++) {
+    if (i == 0) x -= 18;
+    else x += 18;
+    u8g2.drawPixel(x, y);
+    u8g2.drawPixel(x - 1, y + 1);
+    u8g2.drawPixel(x + 1, y + 1);
+    u8g2.drawPixel(x - 2, y + 1);
+    u8g2.drawPixel(x + 2, y + 1);
+    u8g2.drawPixel(x - 3, y + 2);
+    u8g2.drawPixel(x + 3, y + 2);
+  }
+}
+
+void animateBreathe(int x) {
+  int xPos = 48 + x * 20;  // Starting from the mouth and moving right
+
+  // Clear the previous position of "0)"
+  if (x > 0) {
+    u8g2.setDrawColor(0);  // Set color to black for clearing
+    u8g2.drawBox(48 + (x - 1) * 20, 40, 8, 6);
+    u8g2.setDrawColor(1);  // Reset color to white
+    u8g2.sendBuffer();
+    delay(100);
+  }
+  // Draw the new "0)" at the updated position
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(xPos, 46, "0)");
+  u8g2.sendBuffer();  // Send updated frame to display
+  delay(100);
+}
+
+void moveAnger() {
+  Serial.println("Switch ON: Running motor sequence");
+
+  moveForward(255);
+  delay(forwardTime);  // Move forward for the specified time
+
+  stopMotors();
+  delay(stopTime);  // Pause for 1 second
+
+  moveBackward(255);
+  delay(backwardTime);  // Move backward for the specified time
+
+  stopMotors();
+  delay(stopTime);  // Pause for 1 second
+}
+
+void drawSad() {
+  for (int frameCount = 1; frameCount <= 8; frameCount++) {
+
+    u8g2.clearBuffer();  // Clear entire screen buffer for static elements
+
+    if (frameCount >= 1 && frameCount <= 5) {
+      drawSadElements();
+      animateTear(frameCount / 2);
+      animateMouth(frameCount / 2);
+
+      // Add text: "What" on the left, "Happened?" on the right
+      u8g2.setFont(u8g2_font_5x8_tr);
+      u8g2.drawStr(10, 25, "What");
+      u8g2.setFont(u8g2_font_4x6_tr);
+      u8g2.drawStr(90, 35, "Happened?");
+
+      u8g2.sendBuffer();
+      delay(300);
+    }
+
+    else if (frameCount == 6 || frameCount == 7) {
+      u8g2.clearBuffer();
+      drawCheer();
+      u8g2.sendBuffer();
+      delay(500);
+    } else if (frameCount == 8) {
+      u8g2.clearBuffer();
+      // frameCount = 1;
+      drawJoke();
+      u8g2.sendBuffer();
+      delay(500);
+    }
+  }
+}
+
+void drawSadElements() {
+  drawRectBox();
+  u8g2.drawCircle(64, 32, 24);  // Face
+  drawEyes(73, 24);
+}
+
+void animateTear(int frameCount) {
+  short int tearY = 24 + (frameCount * 3);
+
+  // Erase only the previous tear position instead of a larger area
+  u8g2.setDrawColor(0);
+  u8g2.drawPixel(54, tearY - 3);
+  u8g2.drawPixel(74, tearY - 3);
+
+  u8g2.setDrawColor(1);
+  u8g2.drawPixel(54, tearY);
+  u8g2.drawPixel(74, tearY);
+
+  u8g2.sendBuffer();
+  delay(100);
+}
+
+
+void animateMouth(int frameCount) {
+  u8g2.setDrawColor(0);
+  u8g2.drawBox(48, 38, 24, 10);  // Clears only the mouth region precisely
+  u8g2.setDrawColor(1);
+
+  drawRevSmile(64);
+
+  u8g2.sendBuffer();
+  delay(150);
+}
+
+void drawCheer() {
+  drawRectBox();
+  drawvEyes(44, 26);
+  u8g2.drawCircle(35, 32, 24);  // Face
+
+  for (int j = 0; j <= 5; j++) {
+    drawMouth(36, 32, 15, 40 + 5 * j);
+    u8g2.sendBuffer();
+    delay(200);
+  }
+
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(65, 20, "Be Calm..");
+  u8g2.sendBuffer();
+  delay(100);
+  u8g2.setFont(u8g2_font_4x6_tr);
+  u8g2.drawStr(65, 30, "Focus on");
+  u8g2.sendBuffer();
+  delay(100);
+  u8g2.drawStr(65, 38, "what you can");
+  u8g2.sendBuffer();
+  delay(100);
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(65, 48, "CONTROL");
+  u8g2.sendBuffer();
+  delay(100);
+}
+
+void drawJoke() {
+  drawRectBox();
+  drawvEyes(39, 24);
+  u8g2.drawCircle(30, 32, 24);  // Face
+  drawSmile(30,12,8);
+
+  u8g2.setFont(u8g2_font_4x6_tr);
+  u8g2.drawStr(60, 17, "Why don't eggs");
+  u8g2.drawStr(60, 27, "tell jokes?");
+  u8g2.drawStr(60, 40, "They'd crack up!");
+}
+
+void drawSmile(int x, int y, int z) {
+  u8g2.drawFilledEllipse(x, 40, y, z);
+  u8g2.setDrawColor(0);
+  u8g2.drawFilledEllipse(x, 34, y, z);
+  u8g2.setDrawColor(1);
+}
+
+void drawRevSmile(int x) {
+  u8g2.drawFilledEllipse(x, 40, 12, 8);
+  u8g2.setDrawColor(0);
+  u8g2.drawFilledEllipse(x, 43, 12, 8);
+  u8g2.setDrawColor(1);
+}
+
+
+void drawEyes(int x, int y) {
+  for (int i = 0; i <= 1; i++) {
+    if (i == 0) x -= 18;
+    else x += 18;
+    u8g2.drawPixel(x, y);
+    u8g2.drawPixel(x - 1, y - 1);
+    u8g2.drawPixel(x + 1, y - 1);
+    u8g2.drawPixel(x - 2, y - 1);
+    u8g2.drawPixel(x + 2, y - 1);
+    u8g2.drawPixel(x - 3, y - 2);
+    u8g2.drawPixel(x + 3, y - 2);
+  }
+}
+
+void drawMouth(int x, int y, int radius, int degree) {
+  // Draw a small arc from approximately 45 degrees to 135 degrees
+  for (int angle = 90 - degree; angle <= 90 + degree; angle++) {
+    int xPos = x + radius * cos(angle * M_PI / 180);
+    int yPos = y + radius * sin(angle * M_PI / 180);
+    u8g2.drawPixel(xPos, yPos);
+  }
+}
+
+void moveSad() {
+  Serial.println("Switch ON: Running motor sequence");
+
+  moveForward(255);
+  delay(forwardTime);  // Move forward for the specified time
+
+  stopMotors();
+  delay(stopTime);  // Pause for 1 second
+
+  moveBackward(255);
+  delay(backwardTime);  // Move backward for the specified time
+
+  stopMotors();
+  delay(stopTime);  // Pause for 1 second
+}
+
+void drawSurprise() {
+  // Main animation loop
+  for (int frameCount = 1; frameCount < 6; frameCount++) {
+    u8g2.clearBuffer();
+    switch (frameCount % 3) {
+      case 1: originalAnimation(); break;
+      case 2: drawWowFace(); break;
+      case 0: circleAnimation(); break;
+    }
+    u8g2.sendBuffer();
+    delay(500);
+  }
+}
+
+void originalAnimation() {
+
+  u8g2.clearBuffer();
+  u8g2.setFont(u8g2_font_6x10_tr);
+  u8g2.drawStr(40, 30, "TA-DA!!");
+  u8g2.sendBuffer();
+  delay(500);
+
+  drawRectBox();
+
+  // Random stars
+  for (int i = 0; i < 20; i++) {
+    int x = random(20, 108);
+    int y = random(10, 54);
+    u8g2.drawPixel(x, y);
+    u8g2.sendBuffer();
+    delay(100);
+  }
+
+  // Fade out
+  for (int i = 0; i < 10; i++) {
+    int x = random(20, 108);
+    int y = random(10, 54);
+    u8g2.setDrawColor(0);
+    u8g2.drawPixel(x, y);
+    u8g2.setDrawColor(1);
+    u8g2.sendBuffer();
+    delay(100);
+  }
+
+  u8g2.clearBuffer();
+
+  // Initialize stars at center
+  for (int i = 0; i < 15; i++) {
+    starX[i] = 64;
+    starY[i] = 32;
+    starAngle[i] = random(360) * M_PI / 180;  // Proper conversion to radians
+    starActive[i] = true;
+  }
+
+  for (int i = 0; i < 15; i++) {
+    u8g2.drawPixel(starX[i], starY[i]);  // Draw the initial stars at center
+  }
+
+
+  // Animate outward
+  for (int frame = 0; frame < 30; frame++) {
+    u8g2.clearBuffer();
+
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(45, 20, "What a");
+    u8g2.drawStr(45, 35, "Sudden");
+    u8g2.drawStr(45, 50, "Surprise..!");
+    u8g2.sendBuffer();  // Send everything to the display
+
+    for (int i = 0; i < 15; i++) {
+      if (starActive[i]) {
+        starX[i] += cos(starAngle[i]) * 2;
+        starY[i] += sin(starAngle[i]) * 2;
+
+        if (starX[i] >= 0 && starX[i] < 128 && starY[i] >= 0 && starY[i] < 64) {
+          if (i < 5) {  // Larger stars
+            u8g2.drawBox(starX[i], starY[i], 2, 2);
+          } else {  // Small stars
+            u8g2.drawPixel(starX[i], starY[i]);
+          }
+        } else {
+          starActive[i] = false;
+        }
+      }
+    }
+    u8g2.sendBuffer();
+    delay(50);
+  }
+}
+
+void circleAnimation() {
+  drawRectBox();
+
+  for (int r = 1; r < 40; r += 2) {
+    u8g2.clearBuffer();
+    drawRectBox();  // Added to maintain box during animation
+
+    u8g2.setFont(u8g2_font_ncenB12_tr);  // Set a bold font
+    u8g2.setCursor(40, 35);              // Position text at the center
+    u8g2.print("WOW!");
+    // Draw multiple circles
+    for (int i = 0; i < 3; i++) {
+      int radius = r - (i * 10);
+      if (radius > 0) {
+        u8g2.drawCircle(64, 32, radius);
+      }
+    }
+    // Add random sparkles
+    for (int i = 0; i < 5; i++) {
+      float angle = random(360) * M_PI / 180;  // Changed to float for accuracy
+      int x = 64 + r * cos(angle);
+      int y = 32 + r * sin(angle);
+      if (x >= 0 && x < 128 && y >= 0 && y < 64) {
+        u8g2.drawPixel(x, y);
+      }
+    }
+    u8g2.sendBuffer();
+    delay(50);
+  }
+}
+
+void drawWowFace() {
+  u8g2.clearBuffer();
+  drawRectBox();
+  drawCap(30, 12);
+  drawvEyes(39, 24);
+  u8g2.drawCircle(30, 32, 22);  // Face
+  drawSmile(30,12,8);
+  u8g2.setFont(u8g2_font_5x8_tr);
+  u8g2.drawStr(60, 20, "Yep, that's");
+  u8g2.drawStr(60, 32, "exactly how");
+  u8g2.drawStr(60, 45, "I felt");
+  u8g2.sendBuffer();
+  delay(1000);
+}
+
+void drawCap(int x, int y) {
+  // Draw a triangular party cap on the head
+  u8g2.drawTriangle(x, y - 25, x - 15, y, x + 15, y);
+  u8g2.drawDisc(x, y - 28, 3);  // Small circle on top of the cap
+}
+
+void moveSurprise() {
+  // Perform circular motion
+  Serial.println("Moves in circular motion");
+  moveInCircle();
+  delay(500);  // Perform circular motion for 5 seconds
+  // Perform twirling motion
+  for (int i = 0; i < rotations; i++) {
+    Serial.println("It's twirling");
+    twirl();
+    delay(twirlTime);  // Delay for each twirl
+  }
+}
+
+void drawFear() {
+  for (int frameCount = 1; frameCount <= 8; frameCount++) {
+
+    if (frameCount == 1) {
+      u8g2.clearBuffer();
+      u8g2.setFont(u8g2_font_6x10_tr);
+      u8g2.drawStr(15, 20, "Don't");
+      u8g2.drawStr(15, 30, "Worry..");
+
+      u8g2.drawStr(70, 30, "I'm here");
+      u8g2.drawStr(70, 40, "with you");
+      u8g2.sendBuffer();
+      delay(500);
+    }
+    u8g2.clearBuffer();  // Clear entire screen buffer for static elements
+
+    drawFearElements();
+    animateFall(frameCount * 2);
+    animateEyes(frameCount * 2);
+    animateMouth(frameCount * 2);
+    u8g2.sendBuffer();  // Send static elements to display
+    delay(200);
+    if (frameCount == 8) {
+      u8g2.clearBuffer();
+      drawCheer();
+      u8g2.sendBuffer();
+      delay(500);
+    }
+  }
+}
+
+void drawFearElements() {
+  drawRectBox();
+  u8g2.drawCircle(64, 32, 24);  //Face
+  u8g2.drawDisc(54, 24, 2);
+  u8g2.drawDisc(74, 24, 2);  //Eye pupils
+}
+
+void animateFall(int frameCount) {
+  u8g2.drawLine(12, 1, 12, frameCount * 4);
+  u8g2.drawLine(16, 1, 16, frameCount * 4);
+  u8g2.drawLine(118, 1, 118, frameCount * 4);
+  u8g2.drawLine(114, 1, 114, frameCount * 4);
+
+  if (frameCount == 16) {
+    u8g2.setDrawColor(0);
+    u8g2.drawLine(12, 1, 12, 63);
+    u8g2.drawLine(16, 1, 16, 63);
+
+    u8g2.drawLine(118, 1, 118, 63);
+    u8g2.drawLine(114, 1, 114, 63);
+
+    u8g2.sendBuffer();
+  }
+}
+
+void animateEyes(int frameCount) {
+  if (frameCount % 2 != 0) {
+    u8g2.drawDisc(54, 24, 3);
+    u8g2.drawDisc(74, 24, 3);  //Eye pupils
+    u8g2.sendBuffer();
+    delay(50);
+
+  } else {
+    u8g2.drawFilledEllipse(54, 24, 4, 3);
+    u8g2.drawFilledEllipse(74, 24, 4, 3);
+    u8g2.sendBuffer();
+    delay(100);
+  }
+}
+
+void moveFear() {
+  Serial.println("Switch ON: Bot is afraid and moving away once!");
+
+  // Perform sudden backward movement only once
+  suddenMoveAway();
+  stopMotors();
+}
+
+void suddenMoveAway() {
+  Serial.println("Moving away quickly...");
+
+  // Set motor 1 to move backward
+  digitalWrite(I1, LOW);  // Motor 1 backward
+  digitalWrite(I2, HIGH);
+
+  // Set motor 2 to move backward
+  digitalWrite(I3, LOW);  // Motor 2 backward
+  digitalWrite(I4, HIGH);
+
+  // Set motor speed for rapid movement
+  // analogWrite(E1, motorSpeed);  // Speed for Motor 1
+  // analogWrite(E2, motorSpeed);  // Speed for Motor 2
+
+  // Move backward for the defined time
+  delay(moveTime);
+
+  // After the move, stop the motors
+  stopMotors();
+}
+void stopMotors() {
+  // Stop both motors
+  digitalWrite(I1, LOW);
+  digitalWrite(I2, LOW);
+  digitalWrite(I3, LOW);
+  digitalWrite(I4, LOW);
+  // analogWrite(E1, 0);  // Stop Motor 1
+  // analogWrite(E2, 0);  // Stop Motor 2
+}
+void twirl() {
+  digitalWrite(I1, HIGH);  // Motor 1 forward
+  digitalWrite(I2, LOW);
+  digitalWrite(I3, LOW);  // Motor 2 backward
+  digitalWrite(I4, HIGH);
+
+  // analogWrite(E1, motorSpeed);  // Speed for Motor 1
+  // analogWrite(E2, motorSpeed);  // Speed for Motor 2
+}
+void moveInCircle() {
+  digitalWrite(I1, HIGH);  // Motor 1 forward
+  digitalWrite(I2, LOW);
+  digitalWrite(I3, HIGH);  // Motor 2 forward (slower speed)
+  digitalWrite(I4, LOW);
+
+  // analogWrite(E1, motorSpeed);  // Speed for Motor 1
+  // analogWrite(E2, slowSpeed);   // Reduced speed for Motor 2
+}
+void moveBackward(int speed) {
+  digitalWrite(I1, LOW);  // Motor 1 backward
+  digitalWrite(I2, HIGH);
+  digitalWrite(I3, LOW);  // Motor 2 backward
+  digitalWrite(I4, HIGH);
+
+  // analogWrite(E1, speed);  // Speed for Motor 1
+  // analogWrite(E2, speed);  // Speed for Motor 2
+}
+void moveForward(int speed) {
+  digitalWrite(I1, HIGH);
+  digitalWrite(I2, LOW);
+  digitalWrite(I3, HIGH);
+  digitalWrite(I4, LOW);
+  // analogWrite(E1, speed);
+  // analogWrite(E2, speed);
+}
